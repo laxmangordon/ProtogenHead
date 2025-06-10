@@ -252,31 +252,17 @@ int main(int argc, char *argv[]) {
 
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
-  // If started with 'sudo': make sure to drop privileges to same user
-  // we started with, which is the most expected (and allows us to read
-  // files as that user).
+
+  std::string imageFileNames[] = {"happy.gif", "sad.gif", "neutral.gif"};
+
   runtime_opt.drop_priv_user = getenv("SUDO_UID");
   runtime_opt.drop_priv_group = getenv("SUDO_GID");
-  if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv,
-                                         &matrix_options, &runtime_opt)) {
+  if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv, &matrix_options, &runtime_opt)) {
     return usage(argv[0]);
   }
 
-  bool do_mmap = false;
-  bool do_forever = false;
-  bool do_center = false;
-  bool do_shuffle = false;
-
-  // We remember ImageParams for each image, which will change whenever
-  // there is a flag modifying them. This map keeps track of filenames
-  // and their image params (also for unrelated elements of argv[], but doesn't
-  // matter).
-  // We map the pointer instad of the string of the argv parameter so that
-  // we can have two times the same image on the commandline list with different
-  // parameters.
   std::map<const void *, struct ImageParams> filename_params;
 
-  // Set defaults.
   ImageParams img_param;
   for (int i = 0; i < argc; ++i) {
     filename_params[argv[i]] = img_param;
@@ -284,96 +270,18 @@ int main(int argc, char *argv[]) {
 
   const char *stream_output = NULL;
 
-  int opt;
-  while ((opt = getopt(argc, argv, "w:t:l:fr:c:P:LhCR:sO:V:D:m")) != -1) {
-    switch (opt) {
-    case 'w':
-      img_param.wait_ms = roundf(atof(optarg) * 1000.0f);
-      break;
-    case 't':
-      img_param.anim_duration_ms = roundf(atof(optarg) * 1000.0f);
-      break;
-    case 'l':
-      img_param.loops = atoi(optarg);
-      break;
-    case 'D':
-      img_param.anim_delay_ms = atoi(optarg);
-      break;
-    case 'm':
-      do_mmap = true;
-      break;
-    case 'f':
-      do_forever = true;
-      break;
-    case 'C':
-      do_center = true;
-      break;
-    case 's':
-      do_shuffle = true;
-      break;
-    case 'r':
-      fprintf(stderr, "Instead of deprecated -r, use --led-rows=%s instead.\n",
-              optarg);
-      matrix_options.rows = atoi(optarg);
-      break;
-    case 'c':
-      fprintf(stderr, "Instead of deprecated -c, use --led-chain=%s instead.\n",
-              optarg);
-      matrix_options.chain_length = atoi(optarg);
-      break;
-    case 'P':
-      matrix_options.parallel = atoi(optarg);
-      break;
-    case 'L':
-      fprintf(stderr, "-L is deprecated. Use\n\t--led-pixel-mapper=\"U-mapper\" --led-chain=4\ninstead.\n");
-      return 1;
-      break;
-    case 'R':
-      fprintf(stderr, "-R is deprecated. "
-              "Use --led-pixel-mapper=\"Rotate:%s\" instead.\n", optarg);
-      return 1;
-      break;
-    case 'O':
-      stream_output = strdup(optarg);
-      break;
-    case 'V':
-      img_param.vsync_multiple = atoi(optarg);
-      if (img_param.vsync_multiple < 1) img_param.vsync_multiple = 1;
-      break;
-    case 'h':
-    default:
-      return usage(argv[0]);
-    }
-
-    // Starting from the current file, set all the remaining files to
-    // the latest change.
-    for (int i = optind; i < argc; ++i) {
+  for (int i = optind; i < argc; ++i) {
       filename_params[argv[i]] = img_param;
     }
-  }
 
-  const int filename_count = argc - optind;
-  if (filename_count == 0) {
-    fprintf(stderr, "Expected image filename.\n");
-    return usage(argv[0]);
-  }
-
-  // Prepare matrix
   runtime_opt.do_gpio_init = (stream_output == NULL);
   RGBMatrix *matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
-  if (matrix == NULL)
-    return 1;
+  if (matrix == NULL) return 1;
 
   FrameCanvas *offscreen_canvas = matrix->CreateFrameCanvas();
 
-  printf("Size: %dx%d. Hardware gpio mapping: %s\n",
-         matrix->width(), matrix->height(), matrix_options.hardware_mapping);
+  printf("Size: %dx%d. Hardware gpio mapping: %s\n", matrix->width(), matrix->height(), matrix_options.hardware_mapping);
 
-  // These parameters are needed once we do scrolling.
-  const bool fill_width = false;
-  const bool fill_height = false;
-
-  // In case the output to stream is requested, set up the stream object.
   rgb_matrix::StreamIO *stream_io = NULL;
   rgb_matrix::StreamWriter *global_stream_writer = NULL;
   if (stream_output) {
@@ -391,8 +299,8 @@ int main(int argc, char *argv[]) {
   // Preparing all the images beforehand as the Pi might be too slow to
   // be quickly switching between these. So preprocess.
   std::vector<FileInfo*> file_imgs;
-  for (int imgarg = optind; imgarg < argc; ++imgarg) {
-    const char *filename = argv[imgarg];
+  for (int imgarg = 0; imgarg < imageFileNames.size(); ++imgarg) {
+    const char *filename = imageFileNames[imgarg];
     FileInfo *file_info = NULL;
 
     std::string err_msg;
@@ -461,22 +369,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (stream_output) {
-    delete global_stream_writer;
-    delete stream_io;
-    if (file_imgs.size()) {
-      fprintf(stderr, "Done: Output to stream %s; "
-              "this can now be opened with led-image-viewer with the exact same panel configuration settings such as rows, chain, parallel and hardware-mapping\n", stream_output);
-    }
-    if (do_shuffle)
-      fprintf(stderr, "Note: -s (shuffle) does not have an effect when generating streams.\n");
-    if (do_forever)
-      fprintf(stderr, "Note: -f (forever) does not have an effect when generating streams.\n");
-    // Done, no actual output to matrix.
-    return 0;
-  }
-
-  // Some parameter sanity adjustments.
   if (file_imgs.empty()) {
     // e.g. if all files could not be interpreted as image.
     fprintf(stderr, "No image could be loaded.\n");
@@ -514,7 +406,6 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Caught signal. Exiting.\n");
   }
 
-  // Animation finished. Shut down the RGB matrix.
   matrix->Clear();
   delete matrix;
 
